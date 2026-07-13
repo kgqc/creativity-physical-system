@@ -1,5 +1,5 @@
 import { initialCandidates } from "../data/demoBrief";
-import type { MotionBrief, TargetObject } from "../types";
+import type { MotionBrief, TargetObject } from "../types/legacy";
 import { MotionPreview } from "./MotionPreview";
 
 type SceneBriefPanelProps = {

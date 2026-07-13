@@ -1,4 +1,4 @@
-import type { MotionVersion } from "../types";
+import type { MotionVersion } from "../types/legacy";
 import { MotionPreview } from "./MotionPreview";
 
 type VersionSpaceProps = {

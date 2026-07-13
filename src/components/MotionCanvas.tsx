@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { GestureFeatures, Point, PreviewMode, TargetObject } from "../types";
+import type { GestureFeatures, Point, PreviewMode, TargetObject } from "../types/legacy";
 import { MotionPreview } from "./MotionPreview";
 
 type MotionCanvasProps = {

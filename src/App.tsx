@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { uploadAsset } from "./api/assets";
-import { cancelJob, createJob, type JobResult } from "./api/jobs";
-import { getVersions, logEvent, type ServerVersion } from "./api/projects";
+import { api } from "./api";
 import { useJobPolling } from "./hooks/useJobPolling";
 import { useParticipantSession } from "./hooks/useParticipantSession";
+import { useProjectVersions } from "./hooks/useProjectVersions";
+import { JOB_STATUS_LABELS, type GestureData, type GetJobResponse, type JobMode } from "./types";
+import { createClientRequestId } from "./utils/create-client-request-id";
+import { downloadFile } from "./utils/download-file";
+import { exportProjectJson } from "./utils/export-project-json";
 
 type ReferenceId = "paper" | "orb" | "ramp";
-type EditMode = "text" | "motion";
+type EditMode = "text" | "motion" | "combined";
 type MappingMode = "direct" | "expressive";
 
 const references: Array<{
@@ -72,7 +75,7 @@ function MotionStage({
   const progress = Math.min(1, time / 8);
   return (
     <div className={`motion-stage ${fitView ? "fit-view" : ""}`}>
-      {outputUrl && (outputType?.match(/png|jpe?g|webp|gif/i) ? (
+      {outputUrl && (outputType?.match(/image|gif|png|jpe?g|webp/i) ? (
         <img className="generated-output" src={outputUrl} alt="Generated motion result" />
       ) : (
         <video className="generated-output" src={outputUrl} controls autoPlay={playing} loop />
@@ -126,35 +129,32 @@ function App() {
     "Slower at the beginning, then suddenly accelerate upward, with a slight swirl to the right.",
   );
   const [segment, setSegment] = useState({ start: 2.1, end: 4.8 });
-  const [versions, setVersions] = useState<ServerVersion[]>([]);
+  const { versions, refresh: refreshVersions } = useProjectVersions(session?.project.id);
   const [activeVersion, setActiveVersion] = useState("");
   const [referenceAssetId, setReferenceAssetId] = useState<string | null>(null);
   const [uploadedFileName, setUploadedFileName] = useState("");
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [referencePreviewUrl, setReferencePreviewUrl] = useState("");
   const [uploading, setUploading] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
-  const [lastMode, setLastMode] = useState<"initial" | "text_edit" | "motion_edit">("initial");
+  const [lastMode, setLastMode] = useState<JobMode>("initial");
   const [jobError, setJobError] = useState<{ code: string; message: string } | null>(null);
   const [toast, setToast] = useState("");
 
-  const refreshVersions = useCallback(async () => {
-    if (!session) return;
-    const result = await getVersions(session.project.id);
-    setVersions(result.versions);
-    setActiveVersion((current) => current || result.versions[0]?.id || "");
-  }, [session]);
+  useEffect(() => { setActiveVersion((current) => current || versions[0]?.id || ""); }, [versions]);
+  useEffect(() => () => { if (referencePreviewUrl) URL.revokeObjectURL(referencePreviewUrl); }, [referencePreviewUrl]);
 
-  useEffect(() => { void refreshVersions(); }, [refreshVersions]);
-
-  const onJobSettled = useCallback((result: JobResult) => {
+  const onJobSettled = useCallback((result: GetJobResponse) => {
     if (result.job.status === "SUCCEEDED") {
       void refreshVersions().then(() => { if (result.version) setActiveVersion(result.version.id); });
       setToast("Generation completed");
       setPlaying(true);
     } else if (result.job.status === "FAILED") {
-      setJobError(result.job.error ?? { code: "GENERATION_FAILED", message: "Generation failed." });
+      setJobError({ code: result.job.error?.code ?? "GENERATION_FAILED", message: result.job.error?.message ?? "Generation failed." });
     } else if (result.job.status === "CANCELLED") setToast("Generation cancelled");
   }, [refreshVersions]);
-  const jobResult = useJobPolling(activeJobId, onJobSettled);
+  const { result: jobResult, connectionError } = useJobPolling(activeJobId, { onSettled: onJobSettled });
 
   useEffect(() => {
     if (!playing) return undefined;
@@ -182,32 +182,66 @@ function App() {
   const selectedDuration = useMemo(() => segment.end - segment.start, [segment]);
   const currentStep = editMode === "text" ? 3 : recording ? 4 : 3;
 
-  const submitGeneration = async (mode: "initial" | "text_edit" | "motion_edit") => {
+  const gestureDraft = useMemo<GestureData>(() => {
+    const durationMs = Math.max(1, recordSeconds) * 1000;
+    const expressive = mappingMode === "expressive";
+    return {
+      leftHand: {
+        pathPoints: [
+          { x: 0.28, y: 0.78, t: 0 },
+          { x: expressive ? 0.56 : 0.42, y: 0.48, t: Math.round(durationMs * 0.5) },
+          { x: expressive ? 0.72 : 0.55, y: 0.2, t: durationMs },
+        ],
+        speedProfile: expressive ? [0.2, 0.9, 0.45] : [0.35, 0.6, 0.6],
+      },
+      durationMs,
+    };
+  }, [mappingMode, recordSeconds]);
+
+  const submitGeneration = async (mode: JobMode) => {
     if (!session) return;
+    if (!intent.trim()) { setJobError({ code: "BRIEF_REQUIRED", message: "请先填写动画意图。" }); return; }
     if (mode !== "initial" && !activeVersion) { setToast("Generate or select a base version first"); return; }
     setJobError(null); setLastMode(mode);
     try {
-      const result = await createJob({
-        clientRequestId: crypto.randomUUID(), projectId: session.project.id, mode,
+      setSubmitting(true);
+      let assetId = referenceAssetId ?? undefined;
+      if (pendingFile && !assetId) {
+        setUploading(true);
+        const uploaded = await api.uploadAsset(pendingFile, { projectId: session.project.id, assetType: "reference" });
+        assetId = uploaded.asset.id;
+        setReferenceAssetId(assetId);
+        setUploadedFileName(uploaded.asset.originalName);
+        setUploading(false);
+      }
+      const result = await api.createJob({
+        clientRequestId: createClientRequestId(), projectId: session.project.id, mode,
         brief: intent, instruction: mode === "initial" ? "" : instruction,
-        referenceAssetId, baseVersionId: mode === "initial" ? null : activeVersion,
-        gesture: mode === "motion_edit" ? { mappingMode, durationSeconds: recordSeconds, selectedSegment: segment } : undefined,
-        settings: { seed: Math.floor(Math.random() * 2_147_483_647), steps: 20 },
+        referenceAssetId: assetId, baseVersionId: mode === "initial" ? null : activeVersion,
+        gesture: mode === "motion_edit" || mode === "combined_edit" ? gestureDraft : undefined,
+        settings: { seed: Math.floor(Math.random() * 2_147_483_647), steps: 20, durationSeconds: selectedDuration },
       });
       setActiveJobId(result.job.id); setTime(0); setPlaying(false); setToast("Generation queued");
     } catch (reason) { setJobError({ code: "SUBMIT_FAILED", message: reason instanceof Error ? reason.message : "Could not submit generation." }); }
+    finally { setUploading(false); setSubmitting(false); }
   };
 
-  const applyEdit = () => void submitGeneration(editMode === "text" ? "text_edit" : "motion_edit");
+  const applyEdit = () => void submitGeneration(editMode === "text" ? "text_edit" : editMode === "motion" ? "motion_edit" : "combined_edit");
   const generateInitial = () => void submitGeneration("initial");
 
-  const handleUpload = async (file?: File) => {
-    if (!file || !session) return;
-    if (file.size > 30 * 1024 * 1024) { setToast("File exceeds the 30 MB study prototype limit."); return; }
-    setUploading(true);
-    try { const result = await uploadAsset(session.project.id, file); setReferenceAssetId(result.asset.id); setUploadedFileName(result.asset.originalName); setToast("Reference uploaded"); }
-    catch (reason) { setToast(reason instanceof Error ? reason.message : "Upload failed"); }
-    finally { setUploading(false); }
+  const handleUpload = (file?: File) => {
+    if (!file) return;
+    const allowedTypes = new Set(["image/png", "image/jpeg", "image/webp", "video/mp4", "video/webm"]);
+    const configuredLimit = Number(import.meta.env.VITE_MAX_UPLOAD_SIZE_MB ?? 30);
+    const maxMb = Number.isFinite(configuredLimit) && configuredLimit > 0 ? configuredLimit : 30;
+    if (!allowedTypes.has(file.type)) { setToast("仅支持 PNG、JPEG、WebP、MP4 或 WebM 文件。"); return; }
+    if (file.size > maxMb * 1024 * 1024) { setToast(`文件超过 ${maxMb} MB 的前端预检查限制。`); return; }
+    if (referencePreviewUrl) URL.revokeObjectURL(referencePreviewUrl);
+    setReferencePreviewUrl(URL.createObjectURL(file));
+    setPendingFile(file);
+    setReferenceAssetId(null);
+    setUploadedFileName(file.name);
+    setToast("Reference ready");
   };
 
   const selectSegmentFromTimeline = (start: number) => {
@@ -218,29 +252,15 @@ function App() {
   };
 
   const exportState = () => {
-    const payload = {
-      reference: activeReference,
-      intent,
-      selectedSegment: segment,
-      editMode,
-      instruction,
-      mappingMode,
-      versions,
-    };
-    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "motionlab-session.json";
-    link.click();
-    URL.revokeObjectURL(url);
-    if (session) void logEvent(session.project.id, "result_exported", { activeVersionId: activeVersion });
+    if (!session) return;
+    exportProjectJson({ project: session.project, activeVersionId: activeVersion, versions, brief: intent, instruction, gesture: gestureDraft });
+    void api.logEvent({ projectId: session.project.id, eventType: "result_exported", eventData: { activeVersionId: activeVersion } }).catch(() => undefined);
     setToast("Session exported");
   };
 
   const currentVersion = versions.find((version) => version.id === activeVersion);
-  const busy = Boolean(activeJobId && (!jobResult || !["SUCCEEDED", "FAILED", "CANCELLED"].includes(jobResult.job.status)));
-  const statusLabel = jobResult ? `${jobResult.job.status.replace(/_/g, " ")}${jobResult.job.queuePosition ? ` · queue ${jobResult.job.queuePosition}` : ""}` : "";
+  const busy = submitting || uploading || Boolean(activeJobId && (!jobResult || !["SUCCEEDED", "FAILED", "CANCELLED"].includes(jobResult.job.status)));
+  const statusLabel = jobResult ? `${JOB_STATUS_LABELS[jobResult.job.status]}${jobResult.job.queuePosition ? ` · queue ${jobResult.job.queuePosition}` : ""}` : "";
 
   if (session === undefined) return <main className="session-gate"><div className="loading-session">Loading study…</div></main>;
   if (session === null) return <SessionGate onStart={startParticipantSession} error={sessionError} />;
@@ -280,7 +300,7 @@ function App() {
               Presets
             </button>
           </div>
-          <ReferenceArtwork variant={activeReference} />
+          {referencePreviewUrl ? (pendingFile?.type.startsWith("video/") ? <video className="reference-upload-preview" src={referencePreviewUrl} controls /> : <img className="reference-upload-preview" src={referencePreviewUrl} alt="Reference preview" />) : <ReferenceArtwork variant={activeReference} />}
           <div className="reference-thumbs">
             {references.map((reference) => (
               <button
@@ -293,7 +313,7 @@ function App() {
               </button>
             ))}
             <label className="add-reference" title="Upload reference file">
-              <input type="file" accept="image/*,video/*,audio/*" onChange={(event) => void handleUpload(event.target.files?.[0])} />
+              <input type="file" accept="image/png,image/jpeg,image/webp,video/mp4,video/webm" onChange={(event) => handleUpload(event.target.files?.[0])} />
               {uploading ? "…" : "+"}
             </label>
           </div>
@@ -317,7 +337,8 @@ function App() {
               <button className={showPath ? "active" : ""} onClick={() => setShowPath((value) => !value)}>
                 Motion Path
               </button>
-              <button onClick={exportState}>Export</button>
+              <button onClick={exportState}>Export JSON</button>
+              <button disabled={!currentVersion} onClick={() => currentVersion && void downloadFile(currentVersion.outputUrl, currentVersion.fileName || "motion-animation.mp4")}>Download</button>
             </div>
           </div>
           <MotionStage
@@ -329,7 +350,8 @@ function App() {
             outputUrl={currentVersion?.outputUrl}
             outputType={currentVersion?.outputType}
           />
-          {statusLabel && <div className={`job-status ${jobResult?.job.status.toLowerCase()}`}>{statusLabel}{busy && <button onClick={() => activeJobId && void cancelJob(activeJobId).then(() => setToast("Cancellation requested")).catch((reason) => setJobError({ code: "CANCEL_FAILED", message: reason instanceof Error ? reason.message : "Could not cancel generation." }))}>Cancel</button>}</div>}
+          {statusLabel && <div className={`job-status ${jobResult?.job.status.toLowerCase()}`}>{statusLabel}{busy && <button onClick={() => activeJobId && void api.cancelJob(activeJobId).then(() => setToast("Cancellation requested")).catch((reason) => setJobError({ code: "CANCEL_FAILED", message: reason instanceof Error ? reason.message : "Could not cancel generation." }))}>Cancel</button>}</div>}
+          {connectionError && <div className="connection-warning">连接暂时不稳定，前端会继续重试任务状态。</div>}
           {jobError && <div className="job-error"><strong>{jobError.message}</strong><small>Error {jobError.code}</small><div><button onClick={() => void submitGeneration(lastMode)}>Retry</button><button onClick={() => setJobError(null)}>Return to version</button><button onClick={() => void navigator.clipboard.writeText(jobError.code)}>Copy error code</button></div></div>}
           <div className="playback-bar">
             <div className="transport">
@@ -375,14 +397,16 @@ function App() {
             >
               Motion
             </button>
+            <button className={editMode === "combined" ? "active" : ""} onClick={() => setEditMode("combined")}>Combined</button>
           </div>
 
-          {editMode === "text" ? (
+          {(editMode === "text" || editMode === "combined") && (
             <div className="edit-stack">
               <h3>Text Instruction</h3>
               <textarea value={instruction} onChange={(event) => setInstruction(event.target.value)} />
             </div>
-          ) : (
+          )}
+          {(editMode === "motion" || editMode === "combined") && (
             <div className="edit-stack">
               <h3>Motion Performance</h3>
               <div className={`camera-preview ${recording ? "recording" : ""}`}>
@@ -475,7 +499,7 @@ function App() {
                 key={version.id}
                 onClick={() => {
                   setActiveVersion(version.id);
-                  void logEvent(session.project.id, "version_selected", { versionId: version.id });
+                  void api.logEvent({ projectId: session.project.id, eventType: "version_selected", eventData: { versionId: version.id } }).catch(() => undefined);
                   setToast(`V${versions.length - index} selected`);
                 }}
               >

@@ -396,6 +396,15 @@ h3 {
   white-space: nowrap;
 }
 
+.reference-upload-preview {
+  background: #eef4f2;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  height: 206px;
+  object-fit: contain;
+  width: 100%;
+}
+
 .panel-divider {
   background: var(--line);
   height: 1px;
@@ -503,6 +512,16 @@ h3 {
 .job-error small { font-size: 11px; }
 .job-error div { display: flex; flex-wrap: wrap; gap: 6px; }
 .job-error button { min-height: 28px; padding: 4px 8px; }
+
+.connection-warning {
+  background: #fff8df;
+  border: 1px solid #ead48b;
+  border-radius: 7px;
+  color: #715c19;
+  font-size: 12px;
+  margin-top: 8px;
+  padding: 8px 10px;
+}
 
 .session-gate {
   align-items: center;
@@ -703,7 +722,7 @@ h3 {
 .mode-tabs {
   border-bottom: 1px solid var(--line);
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   margin: 20px -18px 18px;
 }
 

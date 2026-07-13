@@ -1,5 +1,5 @@
 import { inkOpenGestureEffects } from "../data/effectPresets";
-import type { EffectCandidate, GestureFeatures } from "../types";
+import type { EffectCandidate, GestureFeatures } from "../types/legacy";
 
 type MotionCardProps = {
   gestureFeatures: GestureFeatures | null;

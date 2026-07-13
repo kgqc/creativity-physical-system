@@ -1,101 +1,129 @@
-# MotionLab × RunningHub research prototype
+# MotionLab 动画创作前端原型
 
-This repository serves the existing React/Vite interface and a participant-isolated Express API from one origin. RunningHub credentials are read only by Node; they are never compiled into the browser bundle.
+## 项目简介
 
-## What is implemented
+这是一个面向 HCI 用户研究的动画创作工具前端原型。本仓库只包含 React 前端，不包含 RunningHub、数据库或后端服务。
 
-- HTTP-only participant sessions backed by SQLite
-- one default project per participant, with owner checks on every asset, job, version, and media query
-- validated uploads (30 MB by default) stored under `data/uploads/`
-- idempotent job submission, one active job per participant, a concurrency-limited local worker, cancellation, and browser polling
-- RunningHub upload/create/status/outputs/cancel client
-- fast, secret-protected webhook handling plus polling reconciliation after missed callbacks or restarts
-- local result downloads under `data/outputs/` and authenticated result playback
-- persistent version ancestry and HCI interaction events
-- production hosting of the Vite build through Express
+前端可在没有网络服务时使用 Mock API 完整演示，也可以通过环境变量切换到合作者实现的真实 API。组件不直接访问后端地址，更不会直接连接 RunningHub。
 
-## Install and configure
+## 技术栈
 
-Requirements: Node.js 20+ and a RunningHub workflow that has already completed successfully at least once.
+- React 19
+- Vite 7
+- TypeScript
+- 浏览器 `localStorage`（仅 Mock 数据）
+- ESLint
+
+## 环境要求
+
+- Node.js 20.19+、22.12+ 或更高兼容版本
+- npm
+
+本次交付在 Node.js 25.1.0 下完成安装、构建、预览与检查。
+
+## 安装方式
 
 ```bash
 npm install
-cp .env.example .env
-npm run db:init
 ```
 
-Set a long random `SESSION_SECRET`, `RUNNINGHUB_API_KEY`, `RUNNINGHUB_WORKFLOW_ID`, and a random `RUNNINGHUB_WEBHOOK_SECRET` in `.env`. Do not add a `VITE_RUNNINGHUB_API_KEY`; every `VITE_` variable can enter the browser bundle.
-
-`PUBLIC_BASE_URL` should be the current HTTPS tunnel origin, for example `https://example.trycloudflare.com`. When omitted, the server uses the public host of the request that created the job. In that mode, submit the first task through the tunnel URL rather than through localhost.
-
-## Inspect and map the RunningHub workflow
-
-In RunningHub, open the workflow, run it successfully, and save/export its API JSON. After the API key and workflow ID are in `.env`, run:
+## 启动 Mock 模式
 
 ```bash
-npm run rh:inspect
-```
-
-The script prints node IDs, titles/classes, input field names, types, and current values without printing the key. Copy only verified node IDs and field names into [`server/config/runninghub-nodes.ts`](server/config/runninghub-nodes.ts). Leave unavailable inputs as `null`; never guess IDs. The server warns at startup while any `REPLACE_ME` mapping remains and fails jobs with a readable error instead of sending invalid overrides.
-
-At minimum, map the positive prompt and whichever reference/edit nodes the workflow actually uses. If one text node accepts the entire prompt, `motionInstruction` may be `null`. The builder automatically omits null, placeholder, empty, and undefined overrides.
-
-## Development
-
-```bash
+cp .env.example .env.local
 npm run dev
 ```
 
-Vite runs with `/api` and `/media` proxied to Express on port 3000. Open the Vite URL shown in the terminal.
+确保 `.env.local` 中为：
 
-## Research / public deployment
+```env
+VITE_USE_MOCK_API=true
+```
 
-Build and start the same-origin production server:
+Mock 模式不需要后端。任务会依次经历准备、排队、生成和结果处理，约 8 秒后创建版本；刷新页面后状态仍会继续。
+
+清空 Mock 数据可在浏览器控制台执行：
+
+```js
+window.resetMotionPrototypeMockData?.();
+location.reload();
+```
+
+模拟稳定失败时设置 `VITE_MOCK_FORCE_FAILURE=true` 并重启开发服务器。失败是确定性的，不会在演示中随机出现。
+
+## 启动真实 API 模式
+
+在 `.env.local` 中设置：
+
+```env
+VITE_USE_MOCK_API=false
+VITE_API_BASE_URL=http://localhost:3000
+```
+
+前后端同域部署时，`VITE_API_BASE_URL` 留空即可。接口必须符合 [接口约定](docs/接口约定.md)。前端不会直接连接 RunningHub，RunningHub API Key 只能保存在合作者的后端。
+
+## 构建与预览
 
 ```bash
 npm run build
-npm run start
+npm run preview
 ```
 
-Open `http://localhost:3000` for a local check. For access from computers and phones, install and start Cloudflare Tunnel in another terminal:
+构建结果位于 `dist/`。最终公共访问、域名、服务器、多用户隔离和 `dist/` 托管由合作者后端负责。
+
+## 项目目录
+
+```text
+public/mock/       小体积 Mock 图片和视频
+src/api/           ApiService、真实 API、Mock API 和请求客户端
+src/types/         稳定的接口、任务、版本、项目和 Gesture 类型
+src/hooks/         Session、版本读取和任务轮询
+src/mocks/         localStorage Mock Store、时序和内部数据
+src/utils/         请求 ID、动画下载和项目 JSON 导出
+src/components/    保留的原型组件
+docs/              中文接口和交接文档
+```
+
+## 环境变量
+
+| 变量名 | 必填 | 默认值 | 用途 |
+| --- | --- | --- | --- |
+| `VITE_USE_MOCK_API` | 否 | `true` | `false` 时使用真实 API |
+| `VITE_API_BASE_URL` | 否 | 空 | 真实后端根地址；同域时留空 |
+| `VITE_JOB_POLL_INTERVAL_MS` | 否 | `3000` | 任务状态轮询间隔，单位毫秒 |
+| `VITE_MAX_UPLOAD_SIZE_MB` | 否 | `30` | 文件上传的前端预检查上限 |
+| `VITE_MOCK_FORCE_FAILURE` | 否 | `false` | 是否让新建 Mock 任务最终失败 |
+
+## 常用命令
 
 ```bash
-brew install cloudflared
-cloudflared tunnel --url http://localhost:3000
+npm run dev
+npm run build
+npm run preview
+npm run lint
 ```
 
-Copy the resulting `https://…trycloudflare.com` origin into `PUBLIC_BASE_URL`, restart Node, and use that public URL on every device. Quick Tunnel URLs change after restart and do not support SSE; this app intentionally uses ordinary HTTP polling. Keep Node, cloudflared, the network connection, and the host computer awake during a study.
+## Mock 模式说明
 
-For a stable domain, configure a Cloudflare Named Tunnel and point it to the same local port. No frontend CORS configuration is needed because Express serves both UI and API.
+- Session、项目、任务、版本、资源元数据和事件保存在带命名空间的 `localStorage` 中。
+- Initial、Text Edit、Motion Edit 和 Combined Edit 都通过同一个 `ApiService`。
+- 取消任务后状态为 `CANCELLED`；失败不会清空文字、Gesture、Reference 或活动版本。
+- Mock 视频只用于演示交互和播放器，不代表真实生成质量。
 
-## Webhook troubleshooting
+## 真实后端接入
 
-1. Confirm `GET /api/health` reports `runningHubConfigured: true`.
-2. Confirm `PUBLIC_BASE_URL` is HTTPS and currently reachable from outside the study computer.
-3. Confirm the workflow node mapping has no `REPLACE_ME` entries that are required for the task.
-4. Check the server log for the job ID and safe error code. Secrets and API keys are not logged.
-5. A missed webhook is not fatal: the reconciler checks RunningHub every `JOB_POLL_INTERVAL_MS` and uses the same idempotent result finalizer.
-6. A repeated `TASK_END` callback cannot create a second version because `versions.source_job_id` is unique.
+合作者应先阅读 [前端交接说明](docs/前端交接说明.md) 和 [接口约定](docs/接口约定.md)，按约定实现 Session、上传、任务、版本和事件接口。关闭 Mock 后，业务组件不会读取 Mock Store。
 
-## Data and reset
+## 安全说明
 
-Study state is in `data/app.db`; private inputs and outputs are under `data/uploads/` and `data/outputs/`. Stop the server before clearing a study:
+- 不得在任何 `VITE_` 环境变量中放置 API Key 或服务器密钥。
+- 不得在前端代码中写入 RunningHub 凭据、Workflow Secret 或数据库凭据。
+- 不得把真实用户研究数据、上传文件或导出结果提交进 Git。
+- 前端上传限制只是体验层预检查，真实权限和文件限制必须由后端再次验证。
 
-```bash
-rm -rf data
-npm run db:init
-```
+## 已知限制
 
-This is destructive and should only be run between studies after preserving any required research data. `data/` and `.env` are ignored by Git.
-
-## Useful configuration
-
-- `JOB_CONCURRENCY=1` serializes RunningHub submissions globally.
-- `MAX_JOBS_PER_PARTICIPANT=30` limits study cost.
-- `MAX_UPLOAD_SIZE_MB=30` matches the prototype's RunningHub upload ceiling.
-- `JOB_POLL_INTERVAL_MS=10000` controls server reconciliation.
-- The browser polls an active local job every 3 seconds.
-
-## Security check
-
-After building, search the browser bundle and DevTools network/storage views for the RunningHub API key, workflow webhook secret, and session secret. They must not appear. Participant IDs sent by a client are ignored; ownership always comes from the HTTP-only session cookie.
+- Mock 输出不代表真实生成效果。
+- 任务进度目前是状态级，而不是百分比级。
+- 本地 Gesture 演示使用归一化示例轨迹，真实摄像头/手势采集可继续接入同一 `GestureData`。
+- 跨域结果下载是否可用取决于合作者后端的 CORS 和下载响应头。

@@ -1,4 +1,4 @@
-import type { Point, PreviewMode } from "../types";
+import type { Point, PreviewMode } from "../types/legacy";
 
 type MotionPreviewProps = {
   mode: PreviewMode;
