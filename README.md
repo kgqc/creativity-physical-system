@@ -110,6 +110,31 @@ npm run lint
 - 取消任务后状态为 `CANCELLED`；失败不会清空文字、Gesture、Reference 或活动版本。
 - Mock 视频只用于演示交互和播放器，不代表真实生成质量。
 
+## 新版页面结构
+
+新版桌面工作区使用统一左侧导航和顶部项目栏，核心流程拆分为三个页面：
+
+- `/create`：上传或替换 Reference、输入 Initial Motion Intent、生成与预览完整动画，并通过缩略图时间轴选择 Segment。选中已有动画版本后，可进入两种独立编辑方式。
+- `/edit/text`：显示选中 Segment 的动画预览与下方 Control Target，以及 Text Instruction 和生成/应用操作；不包含 Timeline、运动参数快捷项或动捕设置。
+- `/edit/motion`：显示选中 Segment 的大尺寸预览与下方 Control Target；右侧依次提供左右手关节、Live Camera / Trajectory Preview、动态 Motion Property、校准与录制状态；不包含 Timeline、Reference、文本编辑或 Mapping Settings。
+- `/versions`：独立版本工作区。所有已生成版本以预览卡片共同展示，显示生成来源和关联 Segment；可选择预览，并将版本应用回其对应片段后返回 Create。
+
+本地启动方式保持不变：
+
+```bash
+npm install
+npm run dev
+```
+
+页面使用浏览器 History 路由，默认入口为 `/create`。Create 中的 Segment 与前端记录的版本片段关联会保存到 `sessionStorage`，Text Edit、Motion Edit 和 Versions 通过统一应用状态读取；Versions 与 Export 继续复用已有 API、版本 Hook 和项目 JSON 导出逻辑。
+
+Mock 与真实能力边界：
+
+- `VITE_USE_MOCK_API=true` 时，Initial、Text Edit、Motion Edit 继续由现有 Mock `ApiService` 创建任务和版本；设置为 `false` 后仍使用 `VITE_API_BASE_URL` 指向的真实后端，接口字段和轮询协议未改变。
+- `VITE_JOB_POLL_INTERVAL_MS`、`VITE_MAX_UPLOAD_SIZE_MB` 和 `VITE_MOCK_FORCE_FAILURE` 的含义保持不变。RunningHub 凭据仍只能由后端保存，前端没有新增或修改 RunningHub 环境变量。
+- Live Camera 在用户点击 `Enable Camera` 后调用浏览器 `getUserMedia()`，需要摄像头权限；拒绝权限时会保留可重试的占位状态。
+- 当前手部关键点、Input Path、Mapped Path 和录制轨迹是结构化 Demo 数据。尚未接入 MediaPipe 等真实手部识别模型，也尚未实现服务端实时轨迹映射；后续可用真实关键点时间序列替换现有 `GestureData`，无需改动任务接口。
+
 ## 真实后端接入
 
 合作者应先阅读 [前端交接说明](docs/前端交接说明.md) 和 [接口约定](docs/接口约定.md)，按约定实现 Session、上传、任务、版本和事件接口。关闭 Mock 后，业务组件不会读取 Mock Store。
